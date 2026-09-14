@@ -1,0 +1,27 @@
+[Unit]
+Description=Board game suite multiplayer
+After=network.target
+
+[Service]
+Type=simple
+User=board-games
+Group=board-games
+WorkingDirectory=/opt/board-game-suite/current
+ExecStart=/usr/bin/node server/index.js
+Environment=NODE_ENV=production
+Environment=PORT=4399
+Environment=HOST=127.0.0.1
+Environment=DATA_DIR=/var/lib/board-game-suite
+Environment=ALLOWED_ORIGINS=https://board.liyucheng.me,https://liyucheng1997.github.io
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/board-game-suite
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

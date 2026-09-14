@@ -1,4 +1,6 @@
+import { createXiangqi, legalXiangqiMoves, pseudoXiangqiMoves, applyXiangqiMove, xiangqiInCheck, findXiangqiKing, cloneXiangqi, inPalace, createGridGame, gomokuWin, countLine, createGo, tryGoMove, goLegalMoves, collectGroup, countLiberties, scoreGo, emptyBoard, inside, samePos, neighbors } from './rules.js';
 import { Chess } from "chess.js";
+import { OnlineRoom } from "./online.js";
 import { RANKS, createJunqi, junqiActions, playJunqi, chooseJunqiAction, stationType, roadNeighbors, railNeighbors } from "./junqi.js";
 import "./styles.css";
 
@@ -97,6 +99,36 @@ const state = {
 function boot() {
   resetGame("chess");
   render();
+  const roomId = new URLSearchParams(location.search).get('room');
+  if (roomId && /^[a-f0-9]{24}$/.test(roomId)) online.start({ roomId });
+}
+
+const online = new OnlineRoom((snapshot) => {
+  const match = snapshot.match;
+  state.junqiMode = match.mode;
+  resetGame(match.type);
+  state.vsCpu = false;
+  state[match.type] = match.type === 'chess' ? new Chess(match.data.fen) : match.data;
+  state.gameOver = match.over;
+  state.log = match.log;
+  render();
+}, () => render());
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function roomPanel() {
+  if (!online.active) return '';
+  const snapshot = online.snapshot;
+  const status = !online.connected ? online.message : snapshot.closed ? '房间已关闭，请退出后创建新房间。' : !snapshot.joined[1] ? '等待朋友加入 · 将邀请链接发送给对方' : !snapshot.online[1 - snapshot.seat] ? '对方暂时离线，等待重新连接' : `双方已连接 · 你执${playerName(snapshot.side)}`;
+  return `<section class="room-panel" aria-label="联机房间">
+    <div><strong>联机对战</strong><span class="room-status" role="status">${escapeHtml(status)}</span></div>
+    ${online.roomId ? `<div class="invite-controls"><input aria-label="邀请链接" value="${escapeHtml(online.inviteUrl())}" readonly><button class="action secondary" data-copy-room>复制邀请链接</button></div>` : ''}
+    ${snapshot && snapshot.rematch !== null && !snapshot.closed ? `<div class="rematch-request">${snapshot.rematch === snapshot.seat ? '已邀请对方重新开局，等待同意。' : '对方邀请重新开局。<button class="action secondary" data-rematch>同意新局</button><button class="action secondary" data-decline>继续本局</button>'}</div>` : ''}
+    ${online.connected && online.message ? `<span class="room-message">${escapeHtml(online.message)}</span>` : ''}
+    <button class="action secondary" data-leave-room>退出房间</button>
+  </section>`;
 }
 
 function resetGame(type = state.active) {
@@ -130,7 +162,7 @@ function render() {
           <div class="brand-mark" aria-hidden="true">棋</div>
           <div>
             <h1>棋盘游戏综合</h1>
-            <p>电脑对战与本地双人</p>
+            <p>电脑 · 双人 · 联机对战</p>
           </div>
         </div>
         <div class="nav-label">游戏收藏</div>
@@ -174,9 +206,11 @@ function render() {
               <button class="${state.vsCpu ? "active" : ""}" data-cpu="on" aria-pressed="${state.vsCpu}">电脑</button>
               <button class="${!state.vsCpu ? "active" : ""}" data-cpu="off" aria-pressed="${!state.vsCpu}">双人</button>
             </div>
+            ${!online.active ? '<button class="action secondary" data-online>联机</button>' : ''}
             ${state.active === "go" ? `<button class="action secondary" data-pass="true">虚着</button>` : ""}
             <button class="action" data-reset="true"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></svg>新局</button>
           </div>
+        ${roomPanel()}
         <section class="table">
           <div class="board-stage ${isStandardJunqi() ? "standard-stage" : ""}" style="--board-ratio:${isStandardJunqi() ? 500 / 760 : game.cols / game.rows}">
             <div class="board-caption"><span>${game.rows} × ${game.cols}<span class="caption-divider">/</span>${state.active === "junqi" ? (isStandardJunqi() ? "明棋 · 黑方在上" : "翻棋对局") : state.active === "go" ? "九路 · 简化数子" : "经典对局"}</span><span class="turn-indicator"><i class="turn-dot ${currentPlayer()}"></i>${state.gameOver ? "已结束" : `${playerName(currentPlayer())}回合`}</span></div>
@@ -218,9 +252,29 @@ function render() {
   `;
 
   bindEvents();
+  if (online.active) {
+    document.querySelectorAll('[data-game], [data-cpu], [data-difficulty], [data-junqi-mode]').forEach((button) => { button.disabled = true; });
+    const reset = document.querySelector('[data-reset]');
+    reset.textContent = '邀请新局';
+    reset.disabled = !online.connected || !online.snapshot?.online.every(Boolean) || online.snapshot?.closed;
+  }
 }
 
 function bindEvents() {
+  document.querySelector('[data-online]')?.addEventListener('click', () => {
+    window.clearTimeout(state.cpuTimer); state.thinking = false; state.vsCpu = false;
+    state.selected = null; state.legal = [];
+    online.start({ game: state.active, mode: state.junqiMode });
+  });
+  document.querySelector('[data-leave-room]')?.addEventListener('click', () => { online.stop(); state.vsCpu = true; resetAndRender(state.active); });
+  document.querySelector('[data-copy-room]')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(online.inviteUrl()); online.message = '邀请链接已复制。'; }
+    catch { online.message = '请选中邀请链接后复制。'; }
+    render();
+    if (online.message.includes('选中')) document.querySelector('[aria-label="邀请链接"]')?.select();
+  });
+  document.querySelector('[data-rematch]')?.addEventListener('click', () => online.send('rematch'));
+  document.querySelector('[data-decline]')?.addEventListener('click', () => online.send('decline'));
   document.querySelectorAll("[data-junqi-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       if (state.junqiMode === button.dataset.junqiMode) return;
@@ -251,7 +305,7 @@ function bindEvents() {
       maybeComputerMove();
     });
   });
-  document.querySelector("[data-reset]")?.addEventListener("click", () => resetAndRender(state.active));
+  document.querySelector("[data-reset]")?.addEventListener("click", () => online.active ? online.send('rematch') : resetAndRender(state.active));
   document.querySelector("[data-pass]")?.addEventListener("click", () => humanGoPass());
   document.querySelectorAll(".cell").forEach((cell) => {
     cell.addEventListener("click", () => handleCell(Number(cell.dataset.r), Number(cell.dataset.c)));
@@ -357,6 +411,7 @@ function pieceHtml(r, c) {
 
 function handleCell(r, c) {
   if (state.gameOver || state.thinking || !isHumanTurn()) return;
+  if (online.active) return handleOnlineCell(r, c);
   if (state.active === "junqi") return handleJunqi(r, c);
   if (state.active === "chess") return handleChess(r, c);
   if (state.active === "xiangqi") return handleXiangqi(r, c);
@@ -365,6 +420,7 @@ function handleCell(r, c) {
 }
 
 function isHumanTurn() {
+  if (online.active) return online.connected && !online.pending && !online.snapshot?.closed && online.snapshot?.online.every(Boolean) && currentPlayer() === online.snapshot.side;
   if (!state.vsCpu) return true;
   return currentPlayer() === GAMES[state.active].human;
 }
@@ -378,6 +434,7 @@ function currentPlayer() {
 }
 
 function maybeComputerMove() {
+  if (online.active) return;
   if (!state.vsCpu || state.gameOver || state.thinking || isHumanTurn()) return;
   state.thinking = true;
   render();
@@ -396,6 +453,32 @@ function maybeComputerMove() {
     state.thinking = false;
     render();
   }, 360);
+}
+
+function handleOnlineCell(r, c) {
+  if (['gomoku', 'go'].includes(state.active)) {
+    if (!state[state.active].board[r][c]) online.move({ kind: 'move', to: { r, c } });
+    return;
+  }
+  const legal = state.legal.find((m) => samePos(m.to, { r, c }));
+  if (legal) {
+    online.move({ kind: 'move', from: state.selected, to: { r, c } });
+    return;
+  }
+  if (state.active === 'junqi') {
+    const piece = state.junqi.board[r][c];
+    if (piece && !piece.revealed) { online.move({ kind: 'flip', to: { r, c } }); return; }
+    state.selected = piece?.side === currentPlayer() ? { r, c } : null;
+    state.legal = state.selected ? junqiActions(state.junqi).filter((m) => samePos(m.from, state.selected)) : [];
+  } else if (state.active === 'xiangqi') {
+    state.selected = state.xiangqi.board[r][c]?.side === currentPlayer() ? { r, c } : null;
+    state.legal = state.selected ? legalXiangqiMoves(state.xiangqi, currentPlayer()).filter((m) => samePos(m.from, state.selected)) : [];
+  } else {
+    const square = toChessSquare(r, c);
+    state.selected = state.chess.get(square)?.color === currentPlayer() ? { r, c } : null;
+    state.legal = state.selected ? state.chess.moves({ square, verbose: true }).map((m) => ({ to: fromChessSquare(m.to), capture: Boolean(m.captured) })) : [];
+  }
+  render();
 }
 
 function handleJunqi(r, c) {
@@ -538,24 +621,6 @@ function fromChessSquare(square) {
   return { r: 8 - Number(square[1]), c: "abcdefgh".indexOf(square[0]) };
 }
 
-function createXiangqi() {
-  const board = emptyBoard(10, 9);
-  const back = ["R", "H", "E", "A", "K", "A", "E", "H", "R"];
-  back.forEach((type, c) => {
-    board[0][c] = { side: "black", type };
-    board[9][c] = { side: "red", type };
-  });
-  [1, 7].forEach((c) => {
-    board[2][c] = { side: "black", type: "C" };
-    board[7][c] = { side: "red", type: "C" };
-  });
-  [0, 2, 4, 6, 8].forEach((c) => {
-    board[3][c] = { side: "black", type: "P" };
-    board[6][c] = { side: "red", type: "P" };
-  });
-  return { board, turn: "red" };
-}
-
 function handleXiangqi(r, c) {
   const piece = state.xiangqi.board[r][c];
   if (state.selected) {
@@ -606,135 +671,6 @@ function chooseXiangqiMove(moves) {
   return best ?? randomItem(moves);
 }
 
-function legalXiangqiMoves(game, side) {
-  const moves = [];
-  for (let r = 0; r < 10; r += 1) {
-    for (let c = 0; c < 9; c += 1) {
-      const piece = game.board[r][c];
-      if (piece?.side === side) moves.push(...pseudoXiangqiMoves(game, { r, c }, piece));
-    }
-  }
-  return moves.filter((move) => {
-    const clone = cloneXiangqi(game);
-    applyXiangqiMove(clone, move, true);
-    return !xiangqiInCheck(clone, side);
-  });
-}
-
-function pseudoXiangqiMoves(game, from, piece) {
-  const moves = [];
-  const add = (r, c) => {
-    if (!inside(r, c, 10, 9)) return;
-    const target = game.board[r][c];
-    if (!target || target.side !== piece.side) moves.push({ from, to: { r, c }, piece, capture: target || null });
-  };
-
-  if (piece.type === "K") {
-    [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dr, dc]) => {
-      const r = from.r + dr;
-      const c = from.c + dc;
-      if (inPalace(piece.side, r, c)) add(r, c);
-    });
-    for (let r = from.r + (piece.side === "red" ? -1 : 1); inside(r, from.c, 10, 9); r += piece.side === "red" ? -1 : 1) {
-      const target = game.board[r][from.c];
-      if (!target) continue;
-      if (target.type === "K" && target.side !== piece.side) add(r, from.c);
-      break;
-    }
-  }
-  if (piece.type === "A") {
-    [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dr, dc]) => {
-      const r = from.r + dr;
-      const c = from.c + dc;
-      if (inPalace(piece.side, r, c)) add(r, c);
-    });
-  }
-  if (piece.type === "E") {
-    [[2, 2], [2, -2], [-2, 2], [-2, -2]].forEach(([dr, dc]) => {
-      const r = from.r + dr;
-      const c = from.c + dc;
-      if (!inside(r, c, 10, 9)) return;
-      const eye = game.board[from.r + dr / 2][from.c + dc / 2];
-      const riverOk = piece.side === "red" ? r >= 5 : r <= 4;
-      if (riverOk && !eye) add(r, c);
-    });
-  }
-  if (piece.type === "H") {
-    [
-      [2, 1, 1, 0],
-      [2, -1, 1, 0],
-      [-2, 1, -1, 0],
-      [-2, -1, -1, 0],
-      [1, 2, 0, 1],
-      [-1, 2, 0, 1],
-      [1, -2, 0, -1],
-      [-1, -2, 0, -1],
-    ].forEach(([dr, dc, lr, lc]) => {
-      if (!game.board[from.r + lr]?.[from.c + lc]) add(from.r + dr, from.c + dc);
-    });
-  }
-  if (piece.type === "R" || piece.type === "C") {
-    [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dr, dc]) => {
-      let screen = false;
-      for (let r = from.r + dr, c = from.c + dc; inside(r, c, 10, 9); r += dr, c += dc) {
-        const target = game.board[r][c];
-        if (piece.type === "R") {
-          if (!target) add(r, c);
-          else {
-            if (target.side !== piece.side) add(r, c);
-            break;
-          }
-        } else if (!screen) {
-          if (!target) add(r, c);
-          else screen = true;
-        } else if (target) {
-          if (target.side !== piece.side) add(r, c);
-          break;
-        }
-      }
-    });
-  }
-  if (piece.type === "P") {
-    const forward = piece.side === "red" ? -1 : 1;
-    add(from.r + forward, from.c);
-    const crossed = piece.side === "red" ? from.r <= 4 : from.r >= 5;
-    if (crossed) {
-      add(from.r, from.c - 1);
-      add(from.r, from.c + 1);
-    }
-  }
-  return moves;
-}
-
-function applyXiangqiMove(game, move, silent = false) {
-  const moving = game.board[move.from.r][move.from.c];
-  move.capture = game.board[move.to.r][move.to.c] || null;
-  game.board[move.to.r][move.to.c] = moving;
-  game.board[move.from.r][move.from.c] = null;
-  if (!silent) game.turn = game.turn === "red" ? "black" : "red";
-  else game.turn = game.turn === "red" ? "black" : "red";
-}
-
-function xiangqiInCheck(game, side) {
-  const king = findXiangqiKing(game, side);
-  if (!king) return true;
-  const enemy = side === "red" ? "black" : "red";
-  for (let r = 0; r < 10; r += 1) {
-    for (let c = 0; c < 9; c += 1) {
-      const piece = game.board[r][c];
-      if (piece?.side === enemy && pseudoXiangqiMoves(game, { r, c }, piece).some((move) => samePos(move.to, king))) return true;
-    }
-  }
-  return false;
-}
-
-function findXiangqiKing(game, side) {
-  for (let r = 0; r < 10; r += 1) {
-    for (let c = 0; c < 9; c += 1) if (game.board[r][c]?.side === side && game.board[r][c].type === "K") return { r, c };
-  }
-  return null;
-}
-
 function updateXiangqiOver() {
   const next = state.xiangqi.turn;
   if (!findXiangqiKing(state.xiangqi, "red") || !findXiangqiKing(state.xiangqi, "black") || legalXiangqiMoves(state.xiangqi, next).length === 0) {
@@ -751,20 +687,8 @@ function evaluateXiangqi(game) {
   return score;
 }
 
-function cloneXiangqi(game) {
-  return { turn: game.turn, board: game.board.map((row) => row.map((piece) => (piece ? { ...piece } : null))) };
-}
-
-function inPalace(side, r, c) {
-  return c >= 3 && c <= 5 && (side === "red" ? r >= 7 && r <= 9 : r >= 0 && r <= 2);
-}
-
 function moveLabel(move) {
   return `${move.from.r + 1},${move.from.c + 1} → ${move.to.r + 1},${move.to.c + 1}`;
-}
-
-function createGridGame(size) {
-  return { board: emptyBoard(size, size), turn: "black", winner: null, moves: 0 };
 }
 
 function handleGomoku(r, c) {
@@ -839,28 +763,6 @@ function gomokuPointScore(board, r, c, color) {
   }, 0);
 }
 
-function gomokuWin(board, r, c, color) {
-  return [[1, 0], [0, 1], [1, 1], [1, -1]].some(([dr, dc]) => {
-    return 1 + countLine(board, r, c, dr, dc, color) + countLine(board, r, c, -dr, -dc, color) >= 5;
-  });
-}
-
-function countLine(board, r, c, dr, dc, color) {
-  let count = 0;
-  for (let nr = r + dr, nc = c + dc; inside(nr, nc, board.length, board.length) && board[nr][nc] === color; nr += dr, nc += dc) count += 1;
-  return count;
-}
-
-function createGo() {
-  return {
-    board: emptyBoard(9, 9),
-    turn: "black",
-    captures: { black: 0, white: 0 },
-    passes: 0,
-    last: "",
-  };
-}
-
 function handleGo(r, c) {
   const result = tryGoMove(state.go, r, c, state.go.turn);
   if (!result.ok) return;
@@ -870,6 +772,7 @@ function handleGo(r, c) {
 
 function humanGoPass() {
   if (state.active !== "go" || state.gameOver || !isHumanTurn()) return;
+  if (online.active) { online.move({ kind: 'pass' }); return; }
   goPass("你");
 }
 
@@ -907,47 +810,6 @@ function goPass(actor) {
   maybeComputerMove();
 }
 
-function tryGoMove(game, r, c, color) {
-  if (!inside(r, c, 9, 9) || game.board[r][c]) return { ok: false, captured: 0 };
-  const copy = game.board.map((row) => [...row]);
-  copy[r][c] = color;
-  const enemy = color === "black" ? "white" : "black";
-  let captured = 0;
-  neighbors(r, c, 9).forEach(([nr, nc]) => {
-    if (copy[nr][nc] === enemy) {
-      const group = collectGroup(copy, nr, nc);
-      if (countLiberties(copy, group) === 0) {
-        captured += group.length;
-        group.forEach(([gr, gc]) => {
-          copy[gr][gc] = null;
-        });
-      }
-    }
-  });
-  const ownGroup = collectGroup(copy, r, c);
-  if (countLiberties(copy, ownGroup) === 0) return { ok: false, captured: 0 };
-  const signature = JSON.stringify(copy);
-  if (signature === game.last) return { ok: false, captured: 0 };
-  game.last = JSON.stringify(game.board);
-  game.board = copy;
-  return { ok: true, captured };
-}
-
-function goLegalMoves(game, color) {
-  const snapshot = {
-    board: game.board.map((row) => [...row]),
-    last: game.last,
-  };
-  const moves = [];
-  for (let r = 0; r < 9; r += 1) {
-    for (let c = 0; c < 9; c += 1) {
-      const test = { board: snapshot.board.map((row) => [...row]), last: snapshot.last };
-      if (tryGoMove(test, r, c, color).ok) moves.push({ r, c });
-    }
-  }
-  return moves;
-}
-
 function chooseGoMove(moves) {
   if (state.difficulty === "easy") return randomItem(moves);
   const color = state.go.turn;
@@ -970,46 +832,15 @@ function chooseGoMove(moves) {
   return best;
 }
 
-function collectGroup(board, r, c) {
-  const color = board[r][c];
-  const stack = [[r, c]];
-  const seen = new Set();
-  const group = [];
-  while (stack.length) {
-    const [cr, cc] = stack.pop();
-    const key = `${cr},${cc}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    group.push([cr, cc]);
-    neighbors(cr, cc, board.length).forEach(([nr, nc]) => {
-      if (board[nr][nc] === color) stack.push([nr, nc]);
-    });
-  }
-  return group;
-}
-
-function countLiberties(board, group) {
-  const libs = new Set();
-  group.forEach(([r, c]) => {
-    neighbors(r, c, board.length).forEach(([nr, nc]) => {
-      if (!board[nr][nc]) libs.add(`${nr},${nc}`);
-    });
-  });
-  return libs.size;
-}
-
-function scoreGo(game) {
-  const score = {
-    black: game.captures.black,
-    white: game.captures.white + 6.5,
-  };
-  game.board.flat().forEach((stone) => {
-    if (stone) score[stone] += 1;
-  });
-  return score;
-}
-
 function statusText() {
+  if (online.active) {
+    if (!online.connected) return '联机连接中，棋盘暂不可操作。';
+    if (online.snapshot.closed) return '房间已关闭。';
+    if (state.gameOver) return online.snapshot.match.result;
+    if (!online.snapshot.online.every(Boolean)) return '等待对方加入或重新连接。';
+    if (online.pending) return '正在同步落子…';
+    return `你执${playerName(online.snapshot.side)}。${isHumanTurn() ? '轮到你落子。' : '等待对方落子。'}`;
+  }
   if (state.active === "junqi" && state.gameOver) return `${junqiResult()}点击新局再来一盘。`;
   if (state.thinking) return "电脑正在思考。";
   if (state.gameOver) return "棋局已经结束，可以点击新局重新开始。";
@@ -1021,8 +852,8 @@ function statusText() {
 function metricsText() {
   if (state.active === "junqi") {
     const pieces = state.junqi.board.flat().filter(Boolean);
-    return metric("红方剩余", pieces.filter((p) => p.side === "red").length)
-      + metric("黑方剩余", pieces.filter((p) => p.side === "black").length)
+    return metric("红方剩余", online.active ? online.snapshot?.match.remaining?.red ?? 0 : pieces.filter((p) => p.side === "red").length)
+      + metric("黑方剩余", online.active ? online.snapshot?.match.remaining?.black ?? 0 : pieces.filter((p) => p.side === "black").length)
       + (isStandardJunqi() ? metric("可走步数", junqiActions(state.junqi).length) : metric("待翻棋子", pieces.filter((p) => !p.revealed).length))
       + metric("手数", state.junqi.moves);
   }
@@ -1061,18 +892,6 @@ function addLog(line) {
   state.log = [line, ...state.log].slice(0, 12);
 }
 
-function emptyBoard(rows, cols) {
-  return Array.from({ length: rows }, () => Array(cols).fill(null));
-}
-
-function inside(r, c, rows, cols) {
-  return r >= 0 && c >= 0 && r < rows && c < cols;
-}
-
-function samePos(a, b) {
-  return Boolean(a && b && a.r === b.r && a.c === b.c);
-}
-
 function randomItem(items) {
   return items[Math.floor(Math.random() * items.length)];
 }
@@ -1092,12 +911,6 @@ function hasNeighbor(board, r, c, distance) {
     }
   }
   return false;
-}
-
-function neighbors(r, c, size) {
-  return [[1, 0], [-1, 0], [0, 1], [0, -1]]
-    .map(([dr, dc]) => [r + dr, c + dc])
-    .filter(([nr, nc]) => inside(nr, nc, size, size));
 }
 
 boot();

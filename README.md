@@ -6,6 +6,8 @@
 
 - 五种棋类一键切换
 - 电脑模式和本地双人模式
+- 五种棋均支持双人联机：创建房间后分享同一个邀请链接，无需注册；满员后禁止第三人加入
+- 联机支持刷新恢复席位、断线重连、双方同意重新开局；由服务器校验轮次与规则，翻棋暗子身份不发送给客户端
 - 轻松、均衡、困难三档难度
 - 响应式界面，支持桌面和移动端
 - 国际象棋使用 `chess.js` 规则引擎
@@ -27,6 +29,8 @@ npm install
 npm run dev
 ```
 
+联机开发时，在另一个终端运行 `npm start`（默认 `127.0.0.1:4399`）。开发页面会自动连接这个本地服务。
+
 ## 构建
 
 ```bash
@@ -36,10 +40,20 @@ npm run build
 ## 测试
 
 ```bash
-npm run dev
-# 在另一个终端运行
 npm test
 ```
+
+测试自动启动 Vite 和联机服务，覆盖原有规则、两个浏览器对战、掉线恢复、第三人拒绝加入和重新开局。
+
+## 联机部署
+
+- 服务器版：[棋盘游戏综合](https://board.liyucheng.me/games/)
+- GitHub Pages 仍可使用，联机服务连接同一服务器。可用构建变量 `VITE_ROOM_SERVER` 指定其他服务地址。
+- 房间在最后一次活动后保留 24 小时，棋局写入服务端磁盘，服务重启后可恢复。刷新同一浏览器可恢复席位；清除网站数据会丢失席位凭证。主动退出会关闭房间。
+- 服务监听 `127.0.0.1:4399`，通过 Nginx 的 `/games/` 反向代理提供 HTTPS / WebSocket。
+- 独立 systemd 服务 `board-game-suite`，程序位于 `/opt/board-game-suite/current`，房间数据位于 `/var/lib/board-game-suite`。每次部署保留上一版目录。
+
+部署文件在 `deploy/`。先运行 `npx vite build --base=./`，将 `dist`、`src`、`server`、`deploy`、`package.json`、`package-lock.json` 打包上传，执行 `sudo bash deploy/install.sh <压缩包绝对路径> <唯一版本名>`。安装脚本使用独立服务账户，并仅在现有 `board.liyucheng.me` 配置中添加 `/games/` 路径。
 
 ## 版本
 
