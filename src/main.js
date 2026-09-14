@@ -1,11 +1,20 @@
 import { Chess } from "chess.js";
+import { RANKS, createJunqi, junqiActions, playJunqi, chooseJunqiAction, stationType, roadNeighbors, railNeighbors } from "./junqi.js";
 import "./styles.css";
 
 const GAMES = {
+  junqi: {
+    title: "军师旅团营",
+    icon: "军",
+    desc: "标准军棋 · 铁路、公路、行营与大本营",
+    rows: 12,
+    cols: 5,
+    human: "red",
+  },
   chess: {
     title: "国际象棋",
     icon: "♔",
-    desc: "标准 8x8 棋盘，支持王车兵马象后，电脑会按难度搜索吃子和局面。",
+    desc: "8 × 8 棋盘 · 白方先行",
     rows: 8,
     cols: 8,
     human: "w",
@@ -13,7 +22,7 @@ const GAMES = {
   xiangqi: {
     title: "中国象棋",
     icon: "帥",
-    desc: "九路十行，含车马炮兵、九宫、过河、炮架和将帅照面。",
+    desc: "九路十行 · 红方先行",
     rows: 10,
     cols: 9,
     human: "red",
@@ -21,7 +30,7 @@ const GAMES = {
   gomoku: {
     title: "五子棋",
     icon: "●",
-    desc: "15 路连珠，先形成横竖斜五连者获胜，电脑会优先成五和堵四。",
+    desc: "横、竖或斜，五子连线即获胜。",
     rows: 15,
     cols: 15,
     human: "black",
@@ -29,7 +38,7 @@ const GAMES = {
   go: {
     title: "围棋",
     icon: "○",
-    desc: "9 路快棋，支持提子、禁自杀、连续虚着终局和简化数子。",
+    desc: "9 路快棋 · 支持提子与虚着，简化数子",
     rows: 9,
     cols: 9,
     human: "black",
@@ -43,12 +52,12 @@ const DIFFICULTY = {
 };
 
 const CHESS_SYMBOL = {
-  wp: "♙",
-  wn: "♘",
-  wb: "♗",
-  wr: "♖",
-  wq: "♕",
-  wk: "♔",
+  wp: "♟",
+  wn: "♞",
+  wb: "♝",
+  wr: "♜",
+  wq: "♛",
+  wk: "♚",
   bp: "♟",
   bn: "♞",
   bb: "♝",
@@ -80,6 +89,9 @@ const state = {
   xiangqi: null,
   gomoku: null,
   go: null,
+  junqi: null,
+  junqiMode: "standard",
+  cpuTimer: null,
 };
 
 function boot() {
@@ -88,6 +100,8 @@ function boot() {
 }
 
 function resetGame(type = state.active) {
+  window.clearTimeout(state.cpuTimer);
+  state.cpuTimer = null;
   state.active = type;
   state.selected = null;
   state.legal = [];
@@ -99,6 +113,12 @@ function resetGame(type = state.active) {
   if (type === "xiangqi") state.xiangqi = createXiangqi();
   if (type === "gomoku") state.gomoku = createGridGame(15);
   if (type === "go") state.go = createGo();
+  if (type === "junqi") {
+    state.junqi = createJunqi(state.junqiMode);
+    GAMES.junqi.rows = state.junqiMode === "standard" ? 12 : 6;
+    GAMES.junqi.cols = state.junqiMode === "standard" ? 5 : 6;
+    GAMES.junqi.desc = state.junqiMode === "standard" ? "标准军棋 · 铁路、公路、行营与大本营" : "翻棋快局 · 翻开棋子，夺取对方军旗";
+  }
 }
 
 function render() {
@@ -107,61 +127,88 @@ function render() {
     <div class="shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">棋</div>
+          <div class="brand-mark" aria-hidden="true">棋</div>
           <div>
             <h1>棋盘游戏综合</h1>
-            <p>四种棋，一套电脑对战</p>
+            <p>电脑对战与本地双人</p>
           </div>
         </div>
-        <div class="game-list">
+        <div class="nav-label">游戏收藏</div>
+        <nav class="game-list" aria-label="选择游戏">
           ${Object.entries(GAMES)
             .map(
               ([key, item]) => `
-                <button class="game-tab ${key === state.active ? "active" : ""}" data-game="${key}">
-                  <span class="icon">${item.icon}</span>
-                  <span><strong>${item.title}</strong><span>${item.rows} × ${item.cols}</span></span>
+                <button class="game-tab ${key === state.active ? "active" : ""}" data-game="${key}" aria-pressed="${key === state.active}">
+                  <span class="icon" aria-hidden="true">${item.icon}</span>
+                  <span class="game-name"><strong>${item.title}</strong><span class="game-size">${item.rows} × ${item.cols}</span></span>
                 </button>
               `,
             )
             .join("")}
-        </div>
+        </nav>
+        <div class="sidebar-note"><span class="availability-dot"></span>随时开始一局<span>电脑对战 · 本地双人</span></div>
       </aside>
       <main class="main">
         <section class="topbar">
           <div class="title-block">
+            <span class="eyebrow">棋盘游戏</span>
             <h2>${game.title}</h2>
             <p>${game.desc}</p>
           </div>
-          <div class="controls">
+        </section>
+          <div class="controls" role="group" aria-label="对局设置">
+            <span class="control-label">对局设置</span>
+            ${state.active === "junqi" ? `<div class="segmented junqi-mode" aria-label="军棋玩法">
+              <button data-junqi-mode="standard" class="${state.junqiMode === "standard" ? "active" : ""}" aria-pressed="${state.junqiMode === "standard"}">标准军棋</button>
+              <button data-junqi-mode="flip" class="${state.junqiMode === "flip" ? "active" : ""}" aria-pressed="${state.junqiMode === "flip"}">翻棋快局</button>
+            </div>` : ""}
             <div class="segmented" aria-label="电脑难度">
               ${Object.entries(DIFFICULTY)
                 .map(
                   ([key, label]) =>
-                    `<button class="${state.difficulty === key ? "active" : ""}" data-difficulty="${key}">${label}</button>`,
+                    `<button class="${state.difficulty === key ? "active" : ""}" data-difficulty="${key}" aria-pressed="${state.difficulty === key}">${label}</button>`,
                 )
                 .join("")}
             </div>
             <div class="toggle" aria-label="电脑模式">
-              <button class="${state.vsCpu ? "active" : ""}" data-cpu="on">电脑</button>
-              <button class="${!state.vsCpu ? "active" : ""}" data-cpu="off">双人</button>
+              <button class="${state.vsCpu ? "active" : ""}" data-cpu="on" aria-pressed="${state.vsCpu}">电脑</button>
+              <button class="${!state.vsCpu ? "active" : ""}" data-cpu="off" aria-pressed="${!state.vsCpu}">双人</button>
             </div>
             ${state.active === "go" ? `<button class="action secondary" data-pass="true">虚着</button>` : ""}
-            <button class="action" data-reset="true">新局</button>
+            <button class="action" data-reset="true"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></svg>新局</button>
           </div>
-        </section>
         <section class="table">
-          <div class="board-wrap">${renderBoard()}</div>
+          <div class="board-stage ${isStandardJunqi() ? "standard-stage" : ""}" style="--board-ratio:${isStandardJunqi() ? 500 / 760 : game.cols / game.rows}">
+            <div class="board-caption"><span>${game.rows} × ${game.cols}<span class="caption-divider">/</span>${state.active === "junqi" ? (isStandardJunqi() ? "明棋 · 黑方在上" : "翻棋对局") : state.active === "go" ? "九路 · 简化数子" : "经典对局"}</span><span class="turn-indicator"><i class="turn-dot ${currentPlayer()}"></i>${state.gameOver ? "已结束" : `${playerName(currentPlayer())}回合`}</span></div>
+            <div class="board-wrap">${renderBoard()}</div>
+            ${isStandardJunqi() ? `<div class="board-legend"><span><i class="legend-rail"></i>铁路</span><span><i class="legend-road"></i>公路</span><span><i class="legend-camp"></i>行营 · 免战</span><span><i class="legend-hq"></i>大本营 · 只进不出</span></div>` : ""}
+            <div class="board-footnote">${state.active === "junqi" ? (isStandardJunqi() ? "自动布阵 · 红方先行 · 选择棋子查看可走位置" : "点击暗棋翻开，或选择己方明棋移动") : ["gomoku", "go"].includes(state.active) ? "点击棋盘空位落子" : "选择棋子，查看可走的位置"}</div>
+          </div>
           <aside class="side-panel">
+            ${state.active === "junqi" ? `<details class="panel junqi-rules">
+              <summary>${isStandardJunqi() ? "标准军棋 · 玩法" : "军棋翻棋 · 玩法"}</summary>
+              ${isStandardJunqi() ? `<p>每方 25 枚明棋，自动合法布阵。军旗放在大本营，地雷位于后两排，炸弹不在最前排，行营开局留空。点击新局可重新布阵。</p>
+              <p>沿公路走一步，行营有斜线公路。沿铁路可直行任意距离，不能越子；只有工兵能沿相通的铁路转弯。中央山界仅有左、中、右三条通道。</p>
+              <p>行营中的棋子不能被攻击；进入大本营后不能再移动，但仍可被攻击。地雷与军旗不能移动。</p>
+              <p class="rank-order">司令 ＞ 军长 ＞ 师长 ＞ 旅长 ＞ 团长 ＞ 营长 ＞ 连长 ＞ 排长 ＞ 工兵</p>
+              <p>大吃小，同级同归于尽，小攻大则阵亡。工兵可排雷，其他普通棋子撞雷阵亡、雷保留；炸弹与对方棋子同归于尽。夺取军旗（含炸弹夺旗）或对方无棋可走即胜。</p>
+              <p>每方：司令、军长、军旗各 1；师长、旅长、团长、营长、炸弹各 2；连长、排长、工兵、地雷各 3。连续 80 手未吃子判和。</p>` : `
+              <p>红方先手。每回合翻开任意暗棋，或移动己方明棋。点击棋子后，亮点表示可走位置。</p>
+              <p class="rank-order">司令 ＞ 军长 ＞ 师长 ＞ 旅长 ＞ 团长 ＞ 营长 ＞ 连长 ＞ 排长 ＞ 工兵</p>
+              <p>上下左右走一格，大吃小，小攻大则阵亡，同级同归于尽。不能走入暗棋或己方棋子所在格。</p>
+              <p>炸弹与对方棋子同归于尽；工兵可排雷，其他棋子碰雷阵亡。地雷、军旗不能移动。任何可移动棋子（含炸弹）夺旗即胜，对方无棋可走也获胜。</p>
+              <p>6×6 简化版，每方 18 子，无铁路、行营。连续 80 手未翻棋或吃子判和。</p>`}
+            </details>` : ""}
             <div class="panel">
-              <h3>局面</h3>
-              <div class="status">${statusText()}</div>
+              <h3><span class="availability-dot"></span>当前对局</h3>
+              <div class="status" role="status">${statusText()}</div>
             </div>
             <div class="panel">
-              <h3>计分</h3>
+              <h3>棋盘概况</h3>
               <div class="metric-grid">${metricsText()}</div>
             </div>
             <div class="panel">
-              <h3>记录</h3>
+              <h3>行棋记录<span class="panel-subtitle">最近 ${state.log.length} 条</span></h3>
               <div class="log">${state.log.map((line) => `<div>${line}</div>`).join("")}</div>
             </div>
           </aside>
@@ -174,6 +221,13 @@ function render() {
 }
 
 function bindEvents() {
+  document.querySelectorAll("[data-junqi-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (state.junqiMode === button.dataset.junqiMode) return;
+      state.junqiMode = button.dataset.junqiMode;
+      resetAndRender("junqi");
+    });
+  });
   document.querySelectorAll("[data-game]").forEach((button) => {
     button.addEventListener("click", () => resetAndRender(button.dataset.game));
   });
@@ -187,6 +241,9 @@ function bindEvents() {
   document.querySelectorAll("[data-cpu]").forEach((button) => {
     button.addEventListener("click", () => {
       state.vsCpu = button.dataset.cpu === "on";
+      window.clearTimeout(state.cpuTimer);
+      state.cpuTimer = null;
+      state.thinking = false;
       state.selected = null;
       state.legal = [];
       addLog(state.vsCpu ? "已开启电脑模式。" : "已切换为本地双人。");
@@ -207,6 +264,30 @@ function resetAndRender(type) {
   maybeComputerMove();
 }
 
+function isStandardJunqi() {
+  return state.active === "junqi" && state.junqiMode === "standard";
+}
+
+function militaryRoutes() {
+  const point = (r, c) => ({ x: c * 100 + 50, y: r * 60 + 30 + (r >= 6 ? 40 : 0) });
+  const paths = { road: [], rail: [] };
+  for (let r = 0; r < 12; r++) for (let c = 0; c < 5; c++) {
+    for (const [type, neighbors] of [["road", roadNeighbors], ["rail", railNeighbors]]) {
+      for (const to of neighbors(r, c)) {
+        if (to.r * 5 + to.c < r * 5 + c) continue;
+        const a = point(r, c), b = point(to.r, to.c);
+        paths[type].push(`M${a.x},${a.y}L${b.x},${b.y}`);
+      }
+    }
+  }
+  return `<svg class="military-routes" viewBox="0 0 500 760" preserveAspectRatio="none" aria-hidden="true">
+    <path class="route-road" d="${paths.road.join(" ")}"/>
+    <path class="route-rail" d="${paths.rail.join(" ")}"/>
+    <path class="route-sleepers" d="${paths.rail.join(" ")}"/>
+    <text x="150" y="384">山界</text><text x="350" y="384">山界</text>
+  </svg>`;
+}
+
 function renderBoard() {
   const game = GAMES[state.active];
   const cells = [];
@@ -215,7 +296,7 @@ function renderBoard() {
       cells.push(renderCell(r, c));
     }
   }
-  return `<div class="board ${state.active}" style="--rows:${game.rows};--cols:${game.cols}">${cells.join("")}</div>`;
+  return `<div class="board ${state.active} ${isStandardJunqi() ? "standard-junqi" : ""}" style="--rows:${game.rows};--cols:${game.cols}" aria-label="${game.title}棋盘">${isStandardJunqi() ? militaryRoutes() : ""}${cells.join("")}</div>`;
 }
 
 function renderCell(r, c) {
@@ -226,16 +307,36 @@ function renderCell(r, c) {
   if (legal) classes.push("legal");
   if (legal?.capture) classes.push("capture");
 
+  if (state.active === "junqi") {
+    const piece = state.junqi.board[r][c];
+    const label = piece ? (piece.revealed ? `${playerName(piece.side)}${RANKS[piece.type].name}` : "未翻棋子") : "空格";
+    if (isStandardJunqi()) {
+      const type = stationType(r, c);
+      const place = { camp: "行营", headquarters: "大本营", station: "兵站" }[type];
+      const last = state.junqi.lastMove;
+      if (samePos(last?.from, { r, c }) || samePos(last?.to, { r, c })) classes.push("last-move");
+      return `<button type="button" class="${classes.join(" ")} ${type}" style="grid-row:${r + 1 + (r >= 6 ? 1 : 0)};grid-column:${c + 1}" data-r="${r}" data-c="${c}" aria-label="${r + 1}行${c + 1}列 ${place} ${label}" aria-pressed="${isSelected}" title="${place}${type === "camp" ? "：营内棋子免受攻击" : type === "headquarters" ? "：棋子进入后不能移动" : ""}"><span class="station-mark" aria-hidden="true">${type === "station" ? "" : place}</span>${pieceHtml(r, c)}</button>`;
+    }
+    return `<button type="button" class="${classes.join(" ")}" data-r="${r}" data-c="${c}" aria-label="${r + 1}行${c + 1}列 ${label}" aria-pressed="${isSelected}">${pieceHtml(r, c)}</button>`;
+  }
+
   return `<div class="${classes.join(" ")}" data-r="${r}" data-c="${c}">${pieceHtml(r, c)}</div>`;
 }
 
 function cellSkin(r, c) {
+  if (state.active === "junqi") return "military";
   if (state.active === "chess") return (r + c) % 2 ? "dark" : "light";
   if (state.active === "xiangqi") return "wood";
   return "grid";
 }
 
 function pieceHtml(r, c) {
+  if (state.active === "junqi") {
+    const piece = state.junqi.board[r][c];
+    if (!piece) return "";
+    if (!piece.revealed) return `<span class="army-piece hidden-piece" aria-hidden="true">军</span>`;
+    return `<span class="army-piece ${piece.side}" aria-hidden="true">${RANKS[piece.type].name}</span>`;
+  }
   if (state.active === "chess") {
     const piece = state.chess.board()[r][c];
     if (!piece) return "";
@@ -256,6 +357,7 @@ function pieceHtml(r, c) {
 
 function handleCell(r, c) {
   if (state.gameOver || state.thinking || !isHumanTurn()) return;
+  if (state.active === "junqi") return handleJunqi(r, c);
   if (state.active === "chess") return handleChess(r, c);
   if (state.active === "xiangqi") return handleXiangqi(r, c);
   if (state.active === "gomoku") return handleGomoku(r, c);
@@ -268,6 +370,7 @@ function isHumanTurn() {
 }
 
 function currentPlayer() {
+  if (state.active === "junqi") return state.junqi.turn;
   if (state.active === "chess") return state.chess.turn();
   if (state.active === "xiangqi") return state.xiangqi.turn;
   if (state.active === "gomoku") return state.gomoku.turn;
@@ -278,7 +381,14 @@ function maybeComputerMove() {
   if (!state.vsCpu || state.gameOver || state.thinking || isHumanTurn()) return;
   state.thinking = true;
   render();
-  window.setTimeout(() => {
+  state.cpuTimer = window.setTimeout(() => {
+    state.cpuTimer = null;
+    if (!state.vsCpu || state.gameOver || isHumanTurn()) {
+      state.thinking = false;
+      render();
+      return;
+    }
+    if (state.active === "junqi") commitJunqi(chooseJunqiAction(state.junqi, state.difficulty));
     if (state.active === "chess") computerChess();
     if (state.active === "xiangqi") computerXiangqi();
     if (state.active === "gomoku") computerGomoku();
@@ -286,6 +396,38 @@ function maybeComputerMove() {
     state.thinking = false;
     render();
   }, 360);
+}
+
+function handleJunqi(r, c) {
+  const piece = state.junqi.board[r][c];
+  const move = state.legal.find((item) => samePos(item.to, { r, c }));
+  if (piece && !piece.revealed) {
+    commitJunqi({ kind: "flip", to: { r, c } });
+  } else if (move) {
+    commitJunqi(move);
+  } else {
+    state.selected = piece?.side === state.junqi.turn && !samePos(state.selected, { r, c }) ? { r, c } : null;
+    state.legal = state.selected ? junqiActions(state.junqi).filter((item) => item.kind === "move" && samePos(item.from, state.selected)) : [];
+  }
+  render();
+  maybeComputerMove();
+}
+
+function commitJunqi(action) {
+  if (!action) return;
+  const actor = playerName(state.junqi.turn);
+  const message = playJunqi(state.junqi, action);
+  if (!message) return;
+  state.selected = null;
+  state.legal = [];
+  addLog(`${actor}：${message}`);
+  state.gameOver = Boolean(state.junqi.winner);
+  if (state.gameOver) addLog(junqiResult());
+}
+
+function junqiResult() {
+  const game = state.junqi;
+  return `${game.winner === "draw" ? "平局" : `${playerName(game.winner)}获胜`}：${game.reason}。`;
 }
 
 function handleChess(r, c) {
@@ -868,6 +1010,7 @@ function scoreGo(game) {
 }
 
 function statusText() {
+  if (state.active === "junqi" && state.gameOver) return `${junqiResult()}点击新局再来一盘。`;
   if (state.thinking) return "电脑正在思考。";
   if (state.gameOver) return "棋局已经结束，可以点击新局重新开始。";
   const player = currentPlayer();
@@ -876,6 +1019,13 @@ function statusText() {
 }
 
 function metricsText() {
+  if (state.active === "junqi") {
+    const pieces = state.junqi.board.flat().filter(Boolean);
+    return metric("红方剩余", pieces.filter((p) => p.side === "red").length)
+      + metric("黑方剩余", pieces.filter((p) => p.side === "black").length)
+      + (isStandardJunqi() ? metric("可走步数", junqiActions(state.junqi).length) : metric("待翻棋子", pieces.filter((p) => !p.revealed).length))
+      + metric("手数", state.junqi.moves);
+  }
   if (state.active === "chess") {
     return metric("回合", state.chess.moveNumber()) + metric("合法走法", state.chess.moves().length);
   }
